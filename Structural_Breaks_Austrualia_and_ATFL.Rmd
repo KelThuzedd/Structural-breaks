@@ -1,0 +1,626 @@
+---
+title: "ATFL"
+output: 
+  html_document:
+    theme: flatly
+runtime: shiny
+---
+
+```{r setup, include=FALSE}
+#knitr::opts_chunk$set(echo = FALSE,
+    #               message = FALSE,
+    #              Warning = FALSE)
+```
+
+# BASE
+
+## Загружаем библиотеки и данные
+
+```{r}
+library("forecast")
+library("lmtest")
+library("tseries")
+library("vars")
+library("urca")
+library("strucchange")
+library(tidyverse)
+
+
+library("TSA")
+
+
+data <-read.csv("C:/Users/User/Downloads/Seminar 5-6/Russtockdaily.txt", sep='\t', dec=',')
+data = data$AFLT
+data = data %>%
+  na.omit()
+```
+
+### Исходный ряд
+
+```{r}
+d0<-data
+plot(d0)
+
+
+```
+
+### Логарфированный ряд
+
+```{r}
+d0<-log(d0)
+plot(d0)
+```
+
+Наблюдаем 1 значимый
+
+```{r}
+Pacf(d0)
+```
+
+## Формируем Лаги
+
+```{r}
+#ARMA
+library("TSA")
+
+plot(d0)
+d1<-diff(d0, differences=1)
+eacf(d1)
+
+modelARMA<-Arima(d0, c(1,1,0), include.constant=TRUE, method = c("CSS-ML"))
+coeftest(modelARMA)
+summary(modelARMA)
+Acf(residuals(modelARMA))
+Box.test(residuals(modelARMA), lag = 6, type = c("Ljung-Box"), fitdf = 0)
+forecast_ARMA<-forecast(modelARMA, h=600)
+plot(forecast_ARMA)
+
+
+
+#GARCH
+library("rugarch")
+
+
+Pacf(d1^2, 100)
+spec = ugarchspec(variance.model = list(model = 'sGARCH',garchOrder = c(1, 1)), mean.model = list(armaOrder = c(0, 0), include.mean = TRUE, archm = FALSE), distribution.model = "norm")
+garch.fit = ugarchfit(spec, d1)
+garch.fit 
+coef(garch.fit)
+
+Acf(residuals(garch.fit))
+Acf(residuals(garch.fit)^2)
+Acf(residuals(garch.fit, standardize="TRUE"))
+Acf(residuals(garch.fit, standardize="TRUE")^2)
+
+
+
+
+#d1 ????????????????? ?? ?????????? ????????????? (?? ARCH-??????)
+d1adj<-d1/garch.fit@fit$sigma*sd(residuals(garch.fit))
+plot(d1adj)
+
+ur.df(d0, type="drift", lags = 1, 
+      selectlags = "Fixed")
+
+d1<-diff(d0, differences=1)
+
+plot(d1)
+
+```
+
+Наблюдаем 4 значимый
+
+```{r}
+Pacf(d1)
+```
+
+## ARMA [4,1]
+
+```{r}
+modelARMA<-Arima(d0, c(1,1,0), include.constant=TRUE, method = c("CSS-ML"))
+coeftest(modelARMA)
+summary(modelARMA)
+Acf(residuals(modelARMA))
+
+```
+
+### TEST Ljung-Box
+
+```{r}
+Box.test(residuals(modelARMA), lag = 2, type = c("Ljung-Box"), fitdf = 1)
+```
+
+### Предсказание
+
+```{r}
+forecast_ARMA<-forecast(modelARMA, h=100)
+plot(forecast_ARMA)
+```
+
+```{r}
+d1_l1 <- c(0,d1[1:length(d1)-1])
+d1_l2 <- c(0,0,d1[2:length(d1)-2])
+```
+
+# TESTS
+
+## F TESTS
+
+### SupF test
+
+```{r}
+#Sup-F test (supWald)
+stat <- Fstats(d1 ~ d1_l1, from = 0.1, to = NULL)
+plot(stat, alpha = 0.01)
+lines(breakpoints(stat))
+a<-breakpoints(stat)
+a$breakpoints
+sctest(stat, type = "supF")
+```
+
+Максимальное значение (при t=785) больше критического, вероятен структурный разрыв, вероятность ошибки низкая.
+
+### AVE F TEST
+
+-   <div>
+
+    ```{r}
+    #Ave-F test (supWald)
+    stat <- Fstats(d1 ~ d1_l1, from = 0.2, to = NULL)
+    plot(stat, alpha = 0.01, aveF=TRUE)
+    sctest(stat, type = "aveF")
+
+    ```
+
+    </div>
+
+Пунктирное значение -- фактическое значение ave-f
+
+Красное значение -- критическое значение с 1% вероятностью для ave-f
+
+Вероятность ошибки примерно такая же, как и у sup-f
+
+## CUSUM AND MOSUM
+
+```{r include=FALSE}
+#OLS-CUSUM ???????
+fit <- Arima(d1, c(1,0,0), include.constant=TRUE, method = c("CSS"))
+e <- residuals(fit)
+sigma <- sqrt(fit$sigma2)
+n <- length(d1)
+cs <- cumsum(e)/(sigma*n^0.5)
+
+
+require(strucchange)
+retval <- list()
+retval$coefficients <- coef(fit)
+retval$sigma <- sigma
+retval$process <- cs
+retval$type.name <- "OLS-based CUSUM test"
+retval$lim.process <- "Brownian bridge"
+'retval$datatsp <- tsp(x)'
+class(retval) <- c("efp")
+plot(retval, alpha = 0.1)
+sctest(retval)
+```
+
+### OLS-CUSUM
+
+```{r}
+# OLS-CUSUM   strucchange
+datay <- data.frame(d1, d1_l1, d1_l2)
+colnames(datay) <- c("y", "ylag1", "ylag2")
+stat <- efp(y ~ ylag1,  type = "OLS-CUSUM", data = datay)
+plot(stat, alpha = 0.1, functional = NULL)
+sctest(stat)
+
+```
+
+Структурного разрыва нет
+
+```{r}
+which.min(stat$process)
+
+```
+
+MIN
+
+### Rec-CUSUM
+
+```{r}
+#Recursive-CUSUM   strucchange
+stat <- efp(y ~ ylag1,  type = "Rec-CUSUM", data = datay)
+plot(stat)
+
+```
+
+### OLS-MOSUM h = 0.5
+
+```{r}
+#OLS/Rec-MOSUM   strucchange
+stat <- efp(y ~ ylag1,  type = "OLS-MOSUM", h=0.5, data = datay)
+plot(stat)
+```
+
+### REC-MOSUN h = 0.5
+
+```{r}
+stat <- efp(y ~ ylag1,  type = "Rec-MOSUM", h=0.5, data = datay)
+plot(stat)
+```
+
+## RE/ME
+
+### RE
+
+```{r}
+#empirical fluctuation process - estimates-based processes
+#stat <- efp(y ~ ylag1,  type = "RE", data = datay)
+#plot(stat)
+```
+
+RE тест почему то не запускается
+
+### ME h=0.5
+
+```{r}
+stat <- efSp(y ~ ylag1,  type = "ME",h=0.5, data = datay)
+plot(stat)
+```
+
+## SCORE CUSUM/MOSUM
+
+### CUSUM
+
+```{r}
+stat <- efp(y ~ ylag1,  type = "Score-CUSUM", data = datay)
+plot(stat)
+
+```
+
+### MOSUM
+
+```{r}
+stat <- efp(y ~ ylag1,  type = "Score-MOSUM", h=0.5, data = datay)
+plot(stat)
+sctest(stat)
+
+```
+
+Видим разрыв
+
+## M-fluctuation process (Частичные структурные разрывы)
+
+```{r}
+
+datay <- data.frame(d1, d1_l1)
+colnames(datay) <- c("y", "ylag1")
+stat <- gefp(y ~ ylag1, data = datay)
+plot(stat, alpha = 0.1)
+sctest(stat)
+```
+
+Не наблюдается структурного разрыва.
+
+### RE TEST (+LAGS)
+
+```{r}
+datay <- data.frame(d1, d1_l1, d1_l2)
+colnames(datay) <- c("y", "ylag1", "ylag2")
+stat <- efp(y ~ ylag1+ ylag2,  type = "RE", data = datay)
+plot(stat, alpha = 0.05, functional = NULL)
+sctest(stat)
+```
+
+### ME test (moving estimates) (+LAGS)
+
+```{r}
+# ME
+datay <- data.frame(d1, d1_l1, d1_l2)
+colnames(datay) <- c("y", "ylag1", "ylag2")
+stat <- efp(y ~ ylag1+ylag2,  type = "ME",h=0.5, data = datay)
+plot(stat, alpha = 0.1, functional = NULL)
+sctest(stat)
+```
+
+## Partial SB xlag
+
+```{r SB}
+#partial SB xlag1
+datay <- data.frame(d1, d1_l1, d1_l2)
+colnames(datay) <- c("y", "ylag1", "ylag2")
+stat <- gefp(y ~ ylag1+ylag2, data = datay, parm = "ylag2")
+plot(stat, alpha = 0.05)
+
+
+
+```
+
+```{r}
+stat <- gefp(y ~ ylag1+ylag2, data = datay, parm = "ylag1")
+plot(stat, alpha = 0.1)
+
+sctest(stat)
+k<-which.max(stat$process)
+model_noSB<-lm(d1 ~ d1_l1)
+summary(model_noSB)
+model_noSB_Arima<-Arima(d0,c(1,1,0))
+
+
+```
+
+    d1_l1after<-c(rep(0,189), d1_l1[190:210])
+    d1_l1before<-c(d1_l1[1:189], rep(0,21))
+
+```{r}
+d1_l1after<-c(rep(0,3506), d1_l1[3507:4290])
+d1_l1before<-c(d1_l1[1:3505], rep(0,785))
+model<-lm(d1 ~ d1_l1)
+```
+
+### TEST Ljung-Box
+
+```{r}
+data <-read.csv("C:/Users/User/Downloads/Seminar 5-6/Russtockdaily.txt", sep='\t', dec=',')
+
+b1<-3825+1
+
+d0<-data$AFLT[seq(b1,e+1)]
+d0<-log(d0)
+plot(d0)
+
+Pacf(d0)
+ur.df(d0, type="drift", lags = 1, 
+      selectlags = "Fixed")
+
+d1<-diff(d0, differences=1)
+Pacf(d1)
+ur.df(d1, type="drift", lags = 1, 
+      selectlags = "Fixed")
+
+modelARMA_SB<-Arima(d0, c(1,1,0), include.constant=TRUE, method = c("CSS-ML"))
+coeftest(modelARMA_SB)
+summary(modelARMA_SB)
+Acf(residuals(modelARMA_SB))
+Box.test(residuals(modelARMA_SB), lag = 6, type = c("Ljung-Box"), fitdf = 1)
+  forecast_ARMA_SB<-forecast(modelARMA_SB, h=20)
+plot(forecast_ARMA_SB)
+forecast_ARMA_SB
+write.csv(forecast_ARMA_SB, "C:/Users/User/YandexDisk/Time Series/Lab 3/forecast.txt")
+
+
+```
+
+```{r}
+model1<-lm(d1 ~ d1_l1before+d1_l1after)
+Box.test(residuals(model1),  lag = 5, type = c("Ljung-Box"), fitdf = 1)
+```
+
+```{r}
+#forecasting based on the linear model is conducted via simulations in Excel or here via the loops 
+
+summary(model)
+summary(model_noSB)
+
+
+```
+
+```{r}
+#partial SB ?????????
+stat <- gefp(y ~ ylag1, data = datay, parm = 1)
+plot(stat, alpha = 0.1)
+sctest(stat)
+```
+
+## BAI PERRON
+
+```{r}
+'Bai Perron'
+d1<-ts(d1, start=1)
+d1_l1 <- c(0,d1[1:length(d1)-1])
+stat <- breakpoints(d1 ~ d1_l1)
+summary(stat)
+plot(stat)
+## compute breakdates corresponding to the
+## breakpoints of minimum BIC segmentation
+breakdates(stat)
+
+
+```
+
+Нет точек разрыва , т.к. минимальный BIC на нуле
+
+```{r eval=FALSE, include=FALSE}
+## confidence intervals
+ci <- confint(stat)
+breakdates(ci)
+ci
+plot(d1)
+lines(ci)
+```
+
+# NENUSHNO
+
+```{r}
+x1 <- arima.sim(model = list(order = c(1,0,0), ar = 0.5), n = 100)*0.02+0.03
+x2 <- arima.sim(model = list(order = c(1,0,0), ar = 0.5), n = 100)*0.02-0.03
+x <- ts(c(x1, x2))
+plot(x)
+x_l1 <- c(0,x[1:length(x)-1])
+x_l2 <- c(0,0,x[2:length(x)-2])
+
+x1
+
+
+```
+
+```{r}
+
+#Sup-F test (supWald)
+stat <- Fstats(x ~ x_l1, from = 0.1, to = NULL)
+plot(stat, alpha = 0.01)
+lines(breakpoints(stat))
+a<-breakpoints(stat)
+a$breakpoints
+sctest(stat, type = "supF")
+```
+
+## CUSUM + RE
+
+### #OLS-CUSUM strucchange
+
+```{r}
+datax <- data.frame(x, x_l1, x_l2)
+datay <- data.frame(d1, d1_l1, d1_l2)
+colnames(datax) <- c("x", "xlag1", "xlag2")
+stat <- efp(x ~ xlag1, type = "OLS-CUSUM", data = datax)
+plot(stat, alpha = 0.1)
+sctest(stat)
+which.max(stat$process)
+
+```
+
+### #Rec-CUSUM strucchange
+
+```{r}
+
+stat <- efp(x ~ xlag1, type = "Rec-CUSUM", data = datax)
+plot(stat, alpha = 0.1)
+sctest(stat)
+
+
+```
+
+### #RE strucchange
+
+```{r}
+stat <- efp(x ~ xlag1, type = "RE", data = datax)
+plot(stat, alpha = 0.1, functional=NULL)
+sctest(stat)
+
+```
+
+## MOSUM + ME
+
+### #OLS-MOSUM strucchange
+
+```{r}
+
+
+
+
+
+
+
+stat <- efp(x ~ xlag1, type = "OLS-MOSUM", h=0.5, data = datax)
+plot(stat, alpha = 0.1)
+sctest(stat)
+
+```
+
+### #Rec-MOSUM strucchange
+
+```{r}
+stat <- efp(x ~ xlag1, type = "Rec-MOSUM", h=0.5, data = datax)
+plot(stat, alpha = 0.1)
+sctest(stat)
+```
+
+### #ME strucchange
+
+```{r}
+stat <- efp(x ~ xlag1, type = "ME", h=0.5, data = datax)
+plot(stat, alpha = 0.1, functional=NULL)
+sctest(stat)
+```
+
+## ??? RE, ME
+
+### #Score-CUSUM strucchange
+
+```{r}
+#Score-CUSUM strucchange
+stat <- efp(x ~ xlag1, type = "Score-CUSUM", data = datax)
+plot(stat, alpha = 0.1, functional=NULL)
+sctest(stat)
+```
+
+### #Score-MOSUM strucchange
+
+```{r}
+#Score-MOSUM strucchange
+stat <- efp(x ~ xlag1, type = "Score-MOSUM", h=0.5, data = datax)
+plot(stat, alpha = 0.1, functional=NULL)
+sctest(stat)
+
+```
+
+### #empirical M-fluctuation process - strucchange
+
+```{r}
+
+#empirical M-fluctuation process - strucchange
+stat <- gefp(x ~ xlag1, data = datax)
+plot(stat, alpha = 0.1, aggregate = FALSE)
+plot(stat, alpha = 0.1)
+sctest(stat)
+
+```
+
+## full versus partial SB
+
+```{r}
+#?????? full versus partial SB
+
+x1 <- arima.sim(model = list(order = c(2,0,0), ar = c(0.5, 0.3)), n = 100)*0.02+0.07
+x2 <- arima.sim(model = list(order = c(2,0,0), ar = c(0.5, 0.3)), n = 100)*0.02+0.01
+x <- ts(c(x1, x2))
+plot(x)
+x_l1 <- c(0,x[1:length(x)-1])
+x_l2 <- c(0,0,x[2:length(x)-2])
+datax <- data.frame(x, x_l1, x_l2)
+colnames(datax) <- c("x", "xlag1", "xlag2")
+
+```
+
+### #full SB xlag1
+
+```{r}
+
+
+
+
+stat <- gefp(x ~ xlag1+xlag2, data = datax)
+plot(stat, alpha = 0.1)
+sctest(stat)
+
+```
+
+### #partial SB xlag1
+
+```{r}
+stat <- gefp(x ~ xlag1+xlag2, data = datax, parm = "xlag1")
+plot(stat, alpha = 0.1)
+sctest(stat)
+
+```
+
+### #partial SB xlag2
+
+```{r}
+stat <- gefp(x ~ xlag1+xlag2, data = datax, parm = "xlag2")
+plot(stat, alpha = 0.1)
+sctest(stat)
+
+```
+
+### #partial SB ?????????
+
+```{r}
+
+stat <- gefp(x ~ xlag1+xlag2, data = datax, parm = 1)
+plot(stat, alpha = 0.1)
+sctest(stat)
+
+
+```
